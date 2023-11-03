@@ -92,10 +92,9 @@ class Processor:
         prompt = self.prompt
         page_tokens = self.page_tokens
         max_tokens = self.max_tokens
-
         for file in os.listdir(directory):
             filename = os.fsdecode(file)
-            if filename.endswith(".pdf") : 
+            if filename.lower().endswith(".pdf"): 
                 print(f"\n─ File: {AnsiCodes.MAGENTA}{AnsiCodes.BOLD}{filename}{AnsiCodes.RESET}")
 
                 # Set the string that will contain the summary     
