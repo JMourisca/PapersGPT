@@ -162,9 +162,9 @@ This script allows you to choose from various types of prompts to guide the summ
 - **Description**: This will provide a detailed analysis and grade of your assignment, as if reviewed by a university professor.
 
 ### `empty`
-- **System**: (Empty)
+- **System**: You are a helpful research assistant.
 - **User**: (Empty)
-- **Description**: No specific role or instruction is given. This is a blank template for custom queries.
+- **Description**: No specific role or instruction is given. This is a blank template for custom queries. Edit the ```user``` property in the ```utils.py``` file.
 
 ## Limitations
 

@@ -87,8 +87,8 @@ class Prompts:
             "user": "Please, analyse and grade my assignment: "
         },
         "empty": {
-            "system": "You are a business analyst.", 
-            "user": "Please tell explain the Siemens Approach to digitalization according to this article: "
+            "system": "You are a helpful research assistant.", 
+            "user": " "
         }
     }
 
