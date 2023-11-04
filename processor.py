@@ -1,9 +1,10 @@
-import PyPDF2
 import openai
 import os
 import tiktoken
+import glob
 from utils import AnsiCodes, Models, Prompts
 from slugify import slugify
+from PyPDF2 import PdfReader
 
 class Processor:
     ai_initiallized = False
@@ -47,15 +48,59 @@ class Processor:
         return text_chunks
     
 
-    def __chat(self, text):
+    def __chat(self, text, page_num):
         self.lazy_initialize();
+
+        prompt = f"Return answer in Markdown. {self.prompt}"
+        if page_num == 1:
+            prompt = f"Return answer in Markdown and add the title as heading 1. {self.prompt}"
 
         messages=[
             {"role": "system", "content": self.system},
-            {"role": "user", "content": f"{self.prompt}{text}"},
+            {"role": "user", "content": f"Return answer in Markdown. {prompt}{text}"},
         ]
 
-        return openai.ChatCompletion.create(model=self.model, messages=messages)
+        try:
+            self.__print_processing_chat()
+            return openai.ChatCompletion.create(model=self.model, messages=messages)
+            # mock = {
+            #         "id": "chatcmpl-123",
+            #         "object": "chat.completion",
+            #         "created": 1677652288,
+            #         "model": "gpt-3.5-turbo-0613",
+            #         "choices": [{
+            #             "index": 0,
+            #             "message": {
+            #             "role": "assistant",
+            #             "content": "\n\nHello there, how may I assist you today?",
+            #             },
+            #             "finish_reason": "stop"
+            #         }],
+            #         "usage": {
+            #             "prompt_tokens": 9,
+            #             "completion_tokens": 12,
+            #             "total_tokens": 21
+            #         }
+            #     }
+            # return mock
+        except openai.error.OpenAIError as e:
+            # Handle general OpenAI errors
+            print(f"An error occurred: {e}")
+        except openai.error.RateLimitError as e:
+            # Handle rate limiting specifically
+            print("Rate limit exceeded, waiting before retrying...")
+            # Implement retry logic or wait
+        except openai.error.InvalidRequestError as e:
+            # Handle invalid requests, such as invalid parameters
+            print(f"Invalid request: {e}")
+        except openai.error.AuthenticationError as e:
+            # Handle authentication errors
+            print("Authentication failed, check your API keys.")
+        except Exception as e:
+            # Handle other unforeseen errors
+            print(f"An unexpected error occurred: {e}")
+
+        return ""
     
 
     def __price(self, usage: str) -> float:
@@ -70,21 +115,83 @@ class Processor:
     
 
     def __execute_part(self, page_num: int, page_text: str, final_file:str):
-        model = self.model
-        prompt = self.prompt
+        response = self.__chat(page_text, page_num)
+        if response == "":
+            return ""
 
-        response = self.__chat(page_text)
-        total = self.__price(response["usage"])
+        total_spent = self.__price(response["usage"])
+
+        subtitle = "Chunk"
+        if self.page_tokens == "page":            
+            subtitle = "Page"
 
         processed_reponse = response["choices"][0]["message"]["content"]
-        pdf_text = f"├─ Page/Chunk {str(page_num)}:\n"
-        pdf_text += processed_reponse + "\n=========\n"
+        pdf_text = f"### {subtitle} {str(page_num)}:\n"
+        pdf_text += processed_reponse + "\n\n---\n"
 
         with open(final_file, "a") as file:
             file.write(pdf_text)
 
-        return total
+        return total_spent
+
+    def __print_text_information(self, max_tokens, total_tokens, total_tokens_prompt, chunks):
+        print(f"\n\t├─ The text has {AnsiCodes.RED}{AnsiCodes.BOLD}{total_tokens + total_tokens_prompt}{AnsiCodes.RESET} tokens (max: {AnsiCodes.CYAN}{AnsiCodes.BOLD}{max_tokens}{AnsiCodes.RESET}). \t")
+        print(f"\t├─ It will process it in {AnsiCodes.CYAN}{AnsiCodes.BOLD}{len(chunks)}{AnsiCodes.RESET} chunks of maximum {AnsiCodes.CYAN}{AnsiCodes.BOLD}{max_tokens}{AnsiCodes.RESET} tokens.")
+
+    def __print_file_header(self, filename):
+        print(f"\n─ File: {AnsiCodes.MAGENTA}{AnsiCodes.BOLD}{filename}{AnsiCodes.RESET}")
+
+    def __print_processing_item(self, name, items, items_num):
+        print(f"\r\t├─ Processing {name}: {AnsiCodes.CYAN}{AnsiCodes.BOLD}{items_num}/{items}{AnsiCodes.RESET}", end="")
+
+    def __print_processing_chat(self):
+        print(f"\n\t├─ OpenAI request...", end="")
+
+    def __create_md_file(self, directory, model, filename):
+        file_split = filename.split(".")
+        final_file = f"{directory}/{slugify(file_split[0])}-{model}-processed.md"
+        return final_file
+
+    def __process_pdf_file(self, total, pdf_file_path, final_file):
+        total_text = []
+        reader = PdfReader(pdf_file_path)
+        total_pages = len(reader.pages)
+        for page_num_index, page in enumerate(reader.pages):
+            page_num = page_num_index + 1
+            self.__print_processing_item("page", total_pages, page_num)
+            page_text = page.extract_text().lower()
+            total_text.append(page_text)
+        return total_text
+
+    def __process_pdf_pages(self, total_text, final_file):
+        total_spent = 0
+        for index, page_text in enumerate(total_text):
+            response = self.__execute_part(index + 1, page_text, final_file)                    
+            if response != "":
+                total_spent += response
+        return total_spent
     
+    def __process_pdf_chunks(self, total_text_arr, final_file):
+        total_text = ' '.join(total_text_arr)
+        total_tokens = self.__count_tokens(total_text)
+        total_tokens_prompt = self.__count_tokens(self.prompt)
+        total_all_tokens = total_tokens + total_tokens_prompt
+        max_tokens = self.max_tokens                   
+        chunks = self.__split_into_chunks(total_text)
+        self.__print_text_information(max_tokens, total_tokens, total_tokens_prompt, chunks)                    
+        chunk_num = 1
+        total_spent = 0
+        
+        for chunk in chunks:
+            self.__print_processing_item("chunk", len(chunks), chunk_num)
+            response = self.__execute_part(chunk_num, chunk, final_file)                  
+            if response == "":
+                return "error"
+            total_spent += response     
+            chunk_num += 1
+            
+        return total_spent
+
     def execute(self):
         total = 0
         directory = self.directory
@@ -92,60 +199,29 @@ class Processor:
         prompt = self.prompt
         page_tokens = self.page_tokens
         max_tokens = self.max_tokens
-        for file in os.listdir(directory):
-            filename = os.fsdecode(file)
-            if filename.lower().endswith(".pdf"): 
-                print(f"\n─ File: {AnsiCodes.MAGENTA}{AnsiCodes.BOLD}{filename}{AnsiCodes.RESET}")
 
-                # Set the string that will contain the summary     
-                total_text = ""
-                total_tokens = 0
+        # Find all PDF files in the directory
+        pdf_files = glob.glob(directory + '/*.pdf')
 
-                # Open the PDF file
-                pdf_file_path = f"{directory}/{filename}"
-                file_split = filename.split(".")
-                final_file = f"{directory}/{slugify(file_split[0])}-{model}-processed.txt"
-                
-                # final_file = new_pdf_file_path.replace(os.path.splitext(new_pdf_file_path)[1], f"-{model}-processed.txt")
+        for pdf_file_path in pdf_files:
+            filename = os.path.basename(pdf_file_path)
+            self.__print_file_header(filename)
 
-                # Read the PDF file using PyPDF2
-                pdf_file = open(pdf_file_path, 'rb')
-                pdf_reader = PyPDF2.PdfReader(pdf_file)
-                
-                # Loop through all the pages in the PDF file
-                total_pages = len(pdf_reader.pages)
-                for page_num in range(total_pages):
-                    # Extract the text from the page                
-                    print(f"\r\t├─ Processing page: {AnsiCodes.CYAN}{AnsiCodes.BOLD}{page_num+1}/{total_pages}{AnsiCodes.RESET}", end="")
-                    page_text = pdf_reader.pages[page_num].extract_text().lower()            
-                    total_tokens += self.__count_tokens(page_text)               
-                    
-                    if page_tokens == "page":
-                        total += self.__execute_part(page_num, page_text, final_file)                    
-                    else: 
-                        total_text += page_text                    
-            
-                pdf_file.close()
-                
-                if page_tokens == "tokens":
-                    total_tokens = self.__count_tokens(total_text)
-                    total_tokens_prompt = self.__count_tokens(prompt)
-                    total_all_tokens = total_tokens + total_tokens_prompt
-                    if total_all_tokens < max_tokens * 5:
-                        if total_all_tokens > max_tokens:                    
-                            chunks = self.__split_into_chunks(total_text)
-                            print(f"\n\t├─ The text has {AnsiCodes.RED}{AnsiCodes.BOLD}{total_tokens + total_tokens_prompt}{AnsiCodes.RESET} tokens (max: {AnsiCodes.CYAN}{AnsiCodes.BOLD}{max_tokens}{AnsiCodes.RESET}). \t")
-                            print(f"\t├─ It will process it in {AnsiCodes.CYAN}{AnsiCodes.BOLD}{len(chunks)}{AnsiCodes.RESET} chunks of maximum {AnsiCodes.CYAN}{AnsiCodes.BOLD}{max_tokens}{AnsiCodes.RESET} tokens.")                    
-                            chunk_num = 1
-                            
-                            for chunk in chunks:
-                                print(f"\r\t├─ Processing chunk: {AnsiCodes.CYAN}{AnsiCodes.BOLD}{chunk_num}/{len(chunks)}{AnsiCodes.RESET}", end="")
-                                total += self.__execute_part(chunk_num, chunk, final_file)
-                                chunk_num += 1
-                        else:
-                            total = self.__execute_part(1, total_text, final_file)
-                    else:
-                        print(f"\n\n{AnsiCodes.RED}{AnsiCodes.BOLD}Too many tokens: {total_all_tokens} and the maximum is {max_tokens}. \nThe limit is {max_tokens} * 5 so it can be done in 5 chunks.\n Increase the limit with the parameter {AnsiCodes.ITALIC}-mt <NUMBER>{AnsiCodes.RESET}{AnsiCodes.RED}{AnsiCodes.BOLD} and the model to gpt-4 with {AnsiCodes.ITALIC}-m gpt{AnsiCodes.RESET}{AnsiCodes.RED}{AnsiCodes.BOLD} if you are sure. {AnsiCodes.RESET}")
-                        continue
+            # Set the string that will contain the summary                 
+            total_tokens = 0
 
-                self.__summary(os.path.abspath(final_file), total_tokens, total)
+            # Open the PDF file
+            final_file = self.__create_md_file(directory, model, filename)
+
+            # Read the PDF file using PyPDF2
+            total_text = self.__process_pdf_file(total, pdf_file_path, final_file)             
+                        
+            if page_tokens == "tokens":
+                total = self.__process_pdf_chunks(total_text, final_file)
+                if total == "error":
+                    continue
+            else:
+                total = self.__process_pdf_pages(total_text, final_file)
+
+            self.__summary(os.path.abspath(final_file), total_tokens, total)
+
