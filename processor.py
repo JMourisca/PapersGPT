@@ -178,7 +178,7 @@ class Processor:
         total_all_tokens = total_tokens + total_tokens_prompt
         max_tokens = self.max_tokens                   
         chunks = self.__split_into_chunks(total_text)
-        self.__print_text_information(max_tokens, total_tokens, total_tokens_prompt, chunks)                    
+        self.__print_text_information(max_tokens, total_all_tokens, total_tokens_prompt, chunks)                    
         chunk_num = 1
         total_spent = 0
         
